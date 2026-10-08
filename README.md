@@ -127,9 +127,9 @@ patches/                                  ← 相对上游的补丁（干净解�
 #### 手机端
 
 <p align="center">
-  <img src="screenshots/06-web-gallery-mobile.jpg" width="300" alt="手机端：图库浏览" />
+  <img src="screenshots/06-web-gallery-mobile.jpg" width="300" style="height:auto" alt="手机端：图库浏览" />
   &nbsp;&nbsp;&nbsp;
-  <img src="screenshots/07-web-tag-tree-mobile.jpg" width="300" alt="手机端：标签树" />
+  <img src="screenshots/07-web-tag-tree-mobile.jpg" width="300" style="height:auto" alt="手机端：标签树" />
 </p>
 
 <p align="center"><em>手机端：图库浏览（左）　标签树（右）</em></p>
