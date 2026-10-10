@@ -21,6 +21,8 @@ import { photos, photoTags, tags } from "@/db/schema";
 import { getSetting, setSetting } from "@/services/settings-manager";
 import { invalidateTagSearch } from "@/services/tag-search-revision";
 import { createLogger } from "@/utils/logger";
+import { shouldResetTaggingCursor } from "./tagging-cursor";
+import { WD14_CHARACTER_ZH } from "./wd14-name-zh";
 import {
   categorizeWd14Tag,
   WD14_TAG_CATEGORIES,
@@ -141,7 +143,7 @@ export function baseNameOf(storedName: string): string {
 
 /** 生成落库的显示名：有中文就用 `中文 (english)`，否则保持英文。 */
 function displayNameFor(english: string, zh: Map<string, string>): string {
-  const chinese = zh.get(english);
+  const chinese = zh.get(english) ?? WD14_CHARACTER_ZH[english];
   return chinese ? `${chinese} (${english})` : english;
 }
 
@@ -262,9 +264,9 @@ export function importWd14Vocabulary(modelsDir: string): {
       ? parentCharacter
       : (typeParentByCategory.get(categorizeWd14Tag(name, category)) ??
         parentOther);
-    // 角色标签没有中文来源（保持英文，可之后右键手动改）；
-    // 通用标签有映射时落库为「中文 (english)」，中英文都能搜到。
-    const targetName = isCharacter ? name : displayNameFor(name, zhNames);
+    // 通用标签走 zh_names.csv；**角色标签**走 Danbooru 中文对照表
+    // （wd14-name-zh.ts，自用新增 2026-10-09）—— 表里没有的仍保持英文原名。
+    const targetName = displayNameFor(name, zhNames);
 
     const found = existing.get(name);
     if (found) {
@@ -332,9 +334,29 @@ export function isWd14VocabularyImported(): boolean {
   return getSetting(VOCAB_KEY) === VOCAB_VERSION;
 }
 
+/**
+ * 自用（方案 A · 问题 6）：开始前的"累计基线"（库里已打标 / 全库张数）。
+ */
+export function getWd14TaggingBaseline(): { done: number; total: number } {
+  const libraryTotal = countRemaining(0);
+  return {
+    done: Math.max(0, libraryTotal - countRemaining(readCursor())),
+    total: libraryTotal,
+  };
+}
+
 /** 是否已经跑完过一次全库重扫（决定下次点按钮是否重置游标）。 */
 export function isFullWd14RunDone(): boolean {
   return getSetting(FULL_RUN_KEY) === "1";
+}
+
+/**
+ * 自用（需求 1）：**强制**下次从第 0 张开始全库重扫。
+ * 只在用户明确要求"换了模型、旧标签全部重打"时用；日常续跑不要碰它。
+ */
+export function resetWd14TaggingProgress(): void {
+  setSetting(CURSOR_KEY, "0");
+  setSetting(FULL_RUN_KEY, "0");
 }
 
 /** 确认词表已导入；必要时执行导入。 */
@@ -572,13 +594,16 @@ export async function runWd14Tagging(
     // 读取该设置的既有写法见 face-detector.ts 的 getSetting("gpu.enabled") === "true"。
     const useGpu = options.useGpu ?? (getSetting("gpu.enabled") === "true");
     log.info({ useGpu, explicit: options.useGpu !== undefined }, "WD14 推理设备");
-    await initWd14Tagger(modelsDir, useGpu);
+    // 自用：打标也跟随「设置 → GPU 加速 → 使用显卡」选中的那块卡。
+    const { getDmlDeviceId } = await import("@/services/gpu-detector");
+    await initWd14Tagger(modelsDir, useGpu, getDmlDeviceId());
     const tagIds = loadTagIdMap();
 
     let done = 0;
     let tagged = 0;
     let failed = 0;
     let total: number;
+    const batchSize = BATCH_SIZE;
 
     if (options.photoIds && options.photoIds.length > 0) {
       const ids = [...new Set(options.photoIds)];
@@ -586,11 +611,11 @@ export async function runWd14Tagging(
         ? ids.slice(0, options.maxPhotos)
         : ids;
       total = limited.length;
-      for (let i = 0; i < limited.length; i += BATCH_SIZE) {
+      for (let i = 0; i < limited.length; i += batchSize) {
         if (cancelRequested) {
           break;
         }
-        const chunk = limited.slice(i, i + BATCH_SIZE);
+        const chunk = limited.slice(i, i + batchSize);
         const rows = loadPhotosByIds(chunk);
         const { written } = await processBatch(rows, tagIds);
         done += chunk.length;
@@ -599,17 +624,28 @@ export async function runWd14Tagging(
         options.onProgress?.({ done, total, tagged, failed });
       }
     } else {
-      if (options.resetCursor && !isFullWd14RunDone()) {
-        // 只在**第一次**全库重扫时把游标归零。
-        // 之后即便中途关掉应用再点一次，也会从上次的游标继续，而不是从头再来
-        //（全库 CPU 跑一遍约 4 小时，重头开始代价太大）。
+      if (
+        shouldResetTaggingCursor(options, {
+          cursor: readCursor(),
+          fullRunDone: isFullWd14RunDone(),
+        })
+      ) {
+        // 只有"一张都还没打过"才会走到这里（等于没变化）。
+        // ⚠️ 修正（自用·需求 1）：原来只判断 `!isFullWd14RunDone()`，而该标记只在
+        //    **完整跑完**时才置位 —— 于是"跑到一半崩溃/关软件/取消"后再点按钮会
+        //    把游标归零、从头重打（全库 CPU 跑一遍约 4 小时，代价极大）。
+        //    要强制全库重扫，用 `resetWd14TaggingProgress()`。
         setSetting(CURSOR_KEY, "0");
       }
       let cursor = readCursor();
-      total = countRemaining(cursor);
-      if (options.maxPhotos) {
-        total = Math.min(total, options.maxPhotos);
-      }
+      /*
+       * 自用（方案 A · 问题 6）：进度用**累计口径**上报（processed=库里已完成+本次，
+       * total=全库张数），避免界面显示"0 / 剩余"那种像从头重跑的数字。
+       */
+      const libraryTotal = countRemaining(0);
+      done = Math.max(0, libraryTotal - countRemaining(cursor));
+      total = libraryTotal;
+      options.onProgress?.({ done, failed, tagged, total });
       for (;;) {
         if (cancelRequested) {
           break;
@@ -617,7 +653,7 @@ export async function runWd14Tagging(
         if (options.maxPhotos && done >= options.maxPhotos) {
           break;
         }
-        const rows = loadPhotosAfterCursor(cursor, BATCH_SIZE);
+        const rows = loadPhotosAfterCursor(cursor, batchSize);
         if (rows.length === 0) {
           break;
         }

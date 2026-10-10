@@ -30,6 +30,16 @@
  */
 export const APP_DISPLAY_NAME = "AI Anime Image Manager LAN";
 
+/**
+ * 自用（需求 8）：本版本的仓库地址 —— "关于"页里"本项目主页"按钮跳这里。
+ * ⚠️ 三个版本各有一份 private-build.ts，所以这里天然按版本区分，别复制错。
+ */
+export const APP_REPOSITORY_URL =
+  "https://github.com/ASakurafoxA/AI-Anime-Image-Manager-LAN";
+
+/** 作者个人主页（三个版本相同）：点击"本项目作者"名字跳这里。 */
+export const AUTHOR_HOMEPAGE_URL = "https://github.com/ASakurafoxA";
+
 export const PRIVATE_BUILD = {
   /** 隐藏左侧主导航与命令面板里的「数据仪表盘」入口 */
   hideDashboard: true,
@@ -209,7 +219,7 @@ export const PRIVATE_BUILD = {
    * 故障仍会记进本地 `diagnostics/incidents.jsonl`，需要时直接看文件即可。
    * 崩溃时的致命错误对话框不受影响（那种情况仍然能直接生成报告）。
    */
-  disableDiagnostics: true,
+  disableDiagnostics: false,
 
   /**
    * 搜索界面精简（与本地工作区保持一致，见根目录「需跟进到局域网工作区的改动.md」）：
@@ -293,7 +303,6 @@ export const PRIVATE_BUILD = {
     "/settings/cloud-sync",
     "/settings/watermark",
     "/settings/update",
-    "/settings/diagnostics",
   ],
 } as const;
 
